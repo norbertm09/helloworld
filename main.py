@@ -2,95 +2,74 @@
 import os
 import base64
 import tempfile
-from fastapi import FastAPI, HTTPException, Path, Query
+from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi.responses import HTMLResponse
 import requests
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 app = FastAPI()
+templates = Jinja2Templates(directory="templates")
 
 def save_cert(varname):
     content = os.getenv(varname)
     if not content:
         raise ValueError(f"{varname} is missing")
     decoded = base64.b64decode(content)
-    temp_file = tempfile.NamedTemporaryFile(delete=False)
-    temp_file.write(decoded)
-    temp_file.close()
-    return temp_file.name
+    file = tempfile.NamedTemporaryFile(delete=False)
+    file.write(decoded)
+    file.close()
+    return file.name
 
-def visa_headers():
-    return {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    return templates.TemplateResponse("form.html", {"request": request})
 
-def visa_cert():
-    return (
-        save_cert("VISA_CERT_B64"),
-        save_cert("VISA_KEY_B64")
-    )
-
-@app.post("/simulate/payouts")
-def simulate_payout():
-    url = "https://sandbox.api.visa.com/visapayouts/v3/payouts"
+@app.post("/simulate/payouts", response_class=HTMLResponse)
+def simulate_payout(
+    request: Request,
+    amount: str = Form(...),
+    card: str = Form(...),
+    sender_name: str = Form(...),
+    recipient_name: str = Form(...)
+):
     try:
-        res = requests.post(
-            url,
-            headers=visa_headers(),
-            json={},  # Payload de test vide ou exemple à insérer
-            cert=visa_cert(),
-            auth=(os.getenv("VISA_USER"), os.getenv("VISA_PASS"))
+        cert_file = save_cert("VISA_CERT_B64")
+        key_file = save_cert("VISA_KEY_B64")
+        user = os.getenv("VISA_USER")
+        passwd = os.getenv("VISA_PASS")
+
+        payload = {
+            "amount": amount,
+            "transactionCurrencyCode": "USD",
+            "recipientPrimaryAccountNumber": card,
+            "senderName": sender_name,
+            "retrievalReferenceNumber": "412770451018",
+            "systemsTraceAuditNumber": "451018",
+            "localTransactionDateTime": "2025-05-23T17:00:00",
+            "acquiringBin": "408999",
+            "acquirerCountryCode": "840",
+            "businessApplicationId": "AA",
+            "merchantCategoryCode": "6012",
+            "pointOfServiceData": {
+                "panEntryMode": "90",
+                "posConditionCode": "00",
+                "motoECIIndicator": "0"
+            }
+        }
+
+        response = requests.post(
+            "https://sandbox.api.visa.com/visapayouts/v3/payouts",
+            json=payload,
+            cert=(cert_file, key_file),
+            auth=(user, passwd)
         )
-        return {"status": res.status_code, "response": res.json() if res.content else res.text}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/simulate/payouts/{payout_id}")
-def get_payout(payout_id: str = Path(...)):
-    url = f"https://sandbox.api.visa.com/visapayouts/v3/payouts/{payout_id}"
-    try:
-        res = requests.get(url, headers=visa_headers(), cert=visa_cert(), auth=(os.getenv("VISA_USER"), os.getenv("VISA_PASS")))
-        return {"status": res.status_code, "response": res.json() if res.content else res.text}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return templates.TemplateResponse("result.html", {
+            "request": request,
+            "status": response.status_code,
+            "result": response.json() if response.content else response.text
+        })
 
-@app.get("/simulate/receivedfunds")
-def get_received_funds():
-    url = "https://sandbox.api.visa.com/visapayouts/v3/receivedfunds"
-    try:
-        res = requests.get(url, headers=visa_headers(), cert=visa_cert(), auth=(os.getenv("VISA_USER"), os.getenv("VISA_PASS")))
-        return {"status": res.status_code, "response": res.json() if res.content else res.text}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/simulate/eligibility")
-def check_eligibility():
-    url = "https://sandbox.api.visa.com/visapayouts/v3/additionalservices/eligibility"
-    try:
-        res = requests.get(url, headers=visa_headers(), cert=visa_cert(), auth=(os.getenv("VISA_USER"), os.getenv("VISA_PASS")))
-        return {"status": res.status_code, "response": res.json() if res.content else res.text}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/simulate/fx-quotes")
-def get_fx_quotes():
-    url = "https://sandbox.api.visa.com/forex/v3/quotes"
-    try:
-        res = requests.get(url, headers=visa_headers(), cert=visa_cert(), auth=(os.getenv("VISA_USER"), os.getenv("VISA_PASS")))
-        return {"status": res.status_code, "response": res.json() if res.content else res.text}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/simulate/legacy-send")
-def legacy_send_payout():
-    url = "https://sandbox.api.visa.com/payouts/v1/sendpayouts"
-    try:
-        res = requests.post(
-            url,
-            headers=visa_headers(),
-            json={},  # Payload exemple à insérer
-            cert=visa_cert(),
-            auth=(os.getenv("VISA_USER"), os.getenv("VISA_PASS"))
-        )
-        return {"status": res.status_code, "response": res.json() if res.content else res.text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
